@@ -14,6 +14,7 @@ namespace Symfony\Component\Messenger\Bridge\AmazonSqs\Transport;
 use AsyncAws\Core\Exception\Http\HttpException;
 use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\TransportException;
+use Symfony\Component\Messenger\Transport\Receiver\ListableReceiverInterface;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
@@ -24,7 +25,7 @@ use Symfony\Contracts\Service\ResetInterface;
 /**
  * @author Jérémy Derussé <jeremy@derusse.com>
  */
-class AmazonSqsTransport implements TransportInterface, SetupableTransportInterface, MessageCountAwareInterface, ResetInterface
+class AmazonSqsTransport implements TransportInterface, SetupableTransportInterface, MessageCountAwareInterface, ResetInterface, ListableReceiverInterface
 {
     private $serializer;
     private $connection;
@@ -67,6 +68,16 @@ class AmazonSqsTransport implements TransportInterface, SetupableTransportInterf
     public function getMessageCount(): int
     {
         return ($this->receiver ?? $this->getReceiver())->getMessageCount();
+    }
+
+    public function all(int $limit = null): iterable
+    {
+        return ($this->receiver ?? $this->getReceiver())->all($limit);
+    }
+
+    public function find($id): ?Envelope
+    {
+        return ($this->receiver ?? $this->getReceiver())->find($id);
     }
 
     /**

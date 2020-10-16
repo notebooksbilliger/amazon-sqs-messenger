@@ -16,15 +16,15 @@ use Symfony\Component\Messenger\Envelope;
 use Symfony\Component\Messenger\Exception\LogicException;
 use Symfony\Component\Messenger\Exception\MessageDecodingFailedException;
 use Symfony\Component\Messenger\Exception\TransportException;
+use Symfony\Component\Messenger\Transport\Receiver\ListableReceiverInterface;
 use Symfony\Component\Messenger\Transport\Receiver\MessageCountAwareInterface;
-use Symfony\Component\Messenger\Transport\Receiver\ReceiverInterface;
 use Symfony\Component\Messenger\Transport\Serialization\PhpSerializer;
 use Symfony\Component\Messenger\Transport\Serialization\SerializerInterface;
 
 /**
  * @author Jérémy Derussé <jeremy@derusse.com>
  */
-class AmazonSqsReceiver implements ReceiverInterface, MessageCountAwareInterface
+class AmazonSqsReceiver implements ListableReceiverInterface, MessageCountAwareInterface
 {
     private $connection;
     private $serializer;
@@ -109,5 +109,31 @@ class AmazonSqsReceiver implements ReceiverInterface, MessageCountAwareInterface
         }
 
         return $sqsReceivedStamp;
+    }
+
+    public function all(int $limit = null): iterable
+    {
+        return $this->connection->peek($limit);
+    }
+
+    public function find($id): ?Envelope
+    {
+        // Won't actually search beyond the first 10 messages;
+        // SQS API doesn't have a search feature and the receiveMessage endpoint
+        // returns max 10 results without offering pagination
+        foreach ($this->connection->peek() as $sqsEnvelope) {
+            if ($sqsEnvelope['id'] !== $id) {
+                continue;
+            }
+
+            $envelope = $this->serializer->decode([
+                'body' => $sqsEnvelope['body'],
+                'headers' => $sqsEnvelope['headers'],
+            ]);
+
+            return $envelope->with(new AmazonSqsReceivedStamp($sqsEnvelope['id']));
+        }
+
+        return null;
     }
 }

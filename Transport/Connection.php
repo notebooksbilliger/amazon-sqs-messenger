@@ -14,7 +14,9 @@ namespace Symfony\Component\Messenger\Bridge\AmazonSqs\Transport;
 use AsyncAws\Sqs\Enum\QueueAttributeName;
 use AsyncAws\Sqs\Result\ReceiveMessageResult;
 use AsyncAws\Sqs\SqsClient;
+use AsyncAws\Sqs\ValueObject\Message;
 use AsyncAws\Sqs\ValueObject\MessageAttributeValue;
+use Exception;
 use Symfony\Component\Messenger\Exception\InvalidArgumentException;
 use Symfony\Component\Messenger\Exception\TransportException;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -30,6 +32,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 class Connection
 {
     private const AWS_SQS_FIFO_SUFFIX = '.fifo';
+    private const AWS_RECEIVE_MESSAGE_LIMIT = 10;
     private const MESSAGE_ATTRIBUTE_NAME = 'X-Symfony-Messenger';
 
     private const DEFAULT_OPTIONS = [
@@ -156,6 +159,36 @@ class Connection
         return null;
     }
 
+    public function peek(int $limit = 1): iterable
+    {
+        if ($limit > self::AWS_RECEIVE_MESSAGE_LIMIT) {
+            throw new Exception(sprintf(
+                'SQS API does not support retrieving more than %d messages at once and does not support pagination. ' .
+                'You need to take the existing messages off the queue before you can see those that follow.',
+                self::AWS_RECEIVE_MESSAGE_LIMIT
+            ));
+        }
+
+        if ($this->configuration['auto_setup']) {
+            $this->setup();
+        }
+
+        $clientOptions = [
+            'QueueUrl' => $this->getQueueUrl(),
+            'VisibilityTimeout' => 0,
+            'MaxNumberOfMessages' => $limit,
+            'MessageAttributeNames' => ['All'],
+            'WaitTimeSeconds' => $this->configuration['wait_time'],
+        ];
+
+        $result = $this->client->receiveMessage($clientOptions);
+        if (!$result->resolve($this->configuration['poll_timeout'])) {
+            return;
+        }
+
+        yield from array_map([$this, 'transformMessage'], $result->getMessages());
+    }
+
     /**
      * @return array[]
      */
@@ -204,25 +237,7 @@ class Connection
         }
 
         foreach ($this->currentResponse->getMessages() as $message) {
-            $headers = [];
-            $attributes = $message->getMessageAttributes();
-            if (isset($attributes[self::MESSAGE_ATTRIBUTE_NAME]) && 'String' === $attributes[self::MESSAGE_ATTRIBUTE_NAME]->getDataType()) {
-                $headers = json_decode($attributes[self::MESSAGE_ATTRIBUTE_NAME]->getStringValue(), true);
-                unset($attributes[self::MESSAGE_ATTRIBUTE_NAME]);
-            }
-            foreach ($attributes as $name => $attribute) {
-                if ('String' !== $attribute->getDataType()) {
-                    continue;
-                }
-
-                $headers[$name] = $attribute->getStringValue();
-            }
-
-            $this->buffer[] = [
-                'id' => $message->getReceiptHandle(),
-                'body' => $message->getBody(),
-                'headers' => $headers,
-            ];
+            $this->buffer[] = $this->transformMessage($message);
         }
 
         $this->currentResponse = null;
@@ -358,5 +373,29 @@ class Connection
     private static function isFifoQueue(string $queueName): bool
     {
         return self::AWS_SQS_FIFO_SUFFIX === substr($queueName, -\strlen(self::AWS_SQS_FIFO_SUFFIX));
+    }
+
+    private function transformMessage(Message $message): array
+    {
+        $headers = [];
+        $attributes = $message->getMessageAttributes();
+        if (isset($attributes[self::MESSAGE_ATTRIBUTE_NAME]) && 'String' === $attributes[self::MESSAGE_ATTRIBUTE_NAME]->getDataType(
+            )) {
+            $headers = json_decode($attributes[self::MESSAGE_ATTRIBUTE_NAME]->getStringValue(), true);
+            unset($attributes[self::MESSAGE_ATTRIBUTE_NAME]);
+        }
+        foreach ($attributes as $name => $attribute) {
+            if ('String' !== $attribute->getDataType()) {
+                continue;
+            }
+
+            $headers[$name] = $attribute->getStringValue();
+        }
+
+        return [
+            'id' => $message->getReceiptHandle(),
+            'body' => $message->getBody(),
+            'headers' => $headers,
+        ];
     }
 }
